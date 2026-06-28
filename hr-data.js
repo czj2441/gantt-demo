@@ -225,3 +225,110 @@ function getPersonTasks(personId) {
     if (!_allTasks) generateHRTasks();
     return _allTasks.filter((t) => t.person_id === personId);
 }
+
+// ========== 外部数据导入 API ==========
+
+// 当前活跃的人员列表（可被外部数据覆盖）
+let _currentPeople = null;
+
+/**
+ * 设置当前人员列表（导入外部数据时调用）
+ * @param {object[]} newPeople
+ */
+function setPeople(newPeople) {
+    _currentPeople = newPeople;
+}
+
+/**
+ * 获取当前活跃的人员列表
+ * @returns {object[]}
+ */
+function getCurrentPeople() {
+    return _currentPeople || getPeople();
+}
+
+/**
+ * 校验并加载外部 JSON 数据
+ * @param {object} data - { people: [...], tasks: [...] }
+ * @returns {{ people: object[], tasks: object[] }}
+ * @throws {Error} 数据格式不正确时抛出
+ */
+function loadExternalData(data) {
+    if (!data || typeof data !== 'object') {
+        throw new Error('数据格式错误：需要一个包含 people 和 tasks 的 JSON 对象');
+    }
+    if (!Array.isArray(data.people) || data.people.length === 0) {
+        throw new Error('数据格式错误：people 必须是非空数组');
+    }
+    if (!Array.isArray(data.tasks) || data.tasks.length === 0) {
+        throw new Error('数据格式错误：tasks 必须是非空数组');
+    }
+
+    // 校验并补全 people
+    const colorPool = ['#4285f4', '#ea4335', '#34a853', '#fbbc04', '#9c27b0', '#ff6d00', '#00acc1', '#7c4dff'];
+    const people = data.people.map(function (p, idx) {
+        if (!p.id) throw new Error('人员缺少 id 字段（索引 ' + idx + '）');
+        if (!p.name) throw new Error('人员缺少 name 字段（索引 ' + idx + '）');
+        return {
+            id: p.id,
+            name: p.name,
+            color: p.color || colorPool[idx % colorPool.length],
+            custom_class: p.custom_class || ('person-' + p.id),
+        };
+    });
+
+    // 校验并转换 tasks
+    const tasks = data.tasks.map(function (t, idx) {
+        if (!t.id) throw new Error('任务缺少 id 字段（索引 ' + idx + '）');
+        if (!t.name) throw new Error('任务缺少 name 字段（索引 ' + idx + '）');
+        if (!t.person_id) throw new Error('任务缺少 person_id 字段（索引 ' + idx + '）');
+
+        var startDate = t.start instanceof Date ? t.start : new Date(t.start);
+        if (isNaN(startDate.getTime())) {
+            throw new Error('任务 ' + t.id + ' 的 start 日期无效：' + t.start);
+        }
+        // 归一化到本地午夜
+        startDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+
+        var endDate;
+        if (t.end) {
+            endDate = t.end instanceof Date ? t.end : new Date(t.end);
+            if (isNaN(endDate.getTime())) {
+                throw new Error('任务 ' + t.id + ' 的 end 日期无效：' + t.end);
+            }
+            endDate = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+        } else if (t.duration) {
+            var days = parseInt(t.duration);
+            if (isNaN(days) || days <= 0) {
+                throw new Error('任务 ' + t.id + ' 的 duration 无效：' + t.duration);
+            }
+            endDate = new Date(startDate.getTime() + (days - 1) * 86400000);
+        } else {
+            throw new Error('任务 ' + t.id + ' 缺少 end 或 duration 字段');
+        }
+
+        var durationDays = Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+
+        // 查找对应 person 的 custom_class
+        var person = people.find(function (p) { return p.id === t.person_id; });
+
+        return {
+            id: t.id,
+            name: t.name,
+            start: startDate,
+            end: endDate,
+            duration: durationDays + 'd',
+            progress: typeof t.progress === 'number' ? t.progress : 0,
+            custom_class: person ? person.custom_class : (t.custom_class || ''),
+            person_id: t.person_id,
+            person_name: person ? person.name : (t.person_name || ''),
+            dependencies: t.dependencies || '',
+        };
+    });
+
+    // 覆盖内部状态
+    _currentPeople = people;
+    _allTasks = tasks;
+
+    return { people: people, tasks: tasks };
+}

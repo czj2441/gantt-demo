@@ -1,0 +1,37 @@
+{
+  "people": [
+    {
+      "id": "import_a",
+      "name": "导入人员A",
+      "color": "#ff5722"
+    },
+    {
+      "id": "import_b",
+      "name": "导入人员B",
+      "color": "#00bcd4"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "import_a_task_1",
+      "name": "导入任务一",
+      "person_id": "import_a",
+      "start": "2026-08-01",
+      "end": "2026-08-10"
+    },
+    {
+      "id": "import_a_task_2",
+      "name": "导入任务二",
+      "person_id": "import_a",
+      "start": "2026-08-05",
+      "end": "2026-08-15"
+    },
+    {
+      "id": "import_b_task_1",
+      "name": "导入任务三",
+      "person_id": "import_b",
+      "start": "2026-08-03",
+      "end": "2026-08-12"
+    }
+  ]
+}

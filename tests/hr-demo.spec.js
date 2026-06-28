@@ -401,4 +401,197 @@ test.describe('HR Gantt Demo 页面测试', () => {
         expect(bodyText).not.toContain('方案 A');
         expect(bodyText).not.toContain('方案 B');
     });
+
+    // ============================================================
+    // 新功能测试：数据导入
+    // ============================================================
+
+    test('导入 UI：导入按钮存在', async ({ page }) => {
+        await expect(page.locator('#btn-import-file')).toBeVisible();
+        await expect(page.locator('#btn-import-paste')).toBeVisible();
+        await expect(page.locator('#btn-reset-data')).toBeVisible();
+    });
+
+    test('导入：粘贴有效 JSON 后表格和图表更新', async ({ page }) => {
+        const importData = JSON.stringify({
+            people: [{ id: 'test1', name: '测试员', color: '#ff0000' }],
+            tasks: [
+                { id: 't1', name: '测试任务A', person_id: 'test1', start: '2026-08-01', end: '2026-08-10' },
+                { id: 't2', name: '测试任务B', person_id: 'test1', start: '2026-08-05', end: '2026-08-15' },
+            ]
+        });
+
+        // 打开粘贴模态框
+        await page.locator('#btn-import-paste').click();
+        await expect(page.locator('#paste-modal')).toBeVisible();
+
+        // 粘贴 JSON
+        await page.locator('#paste-area').fill(importData);
+        await page.locator('#btn-paste-confirm').click();
+        await page.waitForTimeout(500);
+
+        // 验证表格已更新为 2 行
+        const rows = page.locator('#task-table-body-a tr');
+        await expect(rows).toHaveCount(2);
+
+        // 验证多图模式有 1 个卡片
+        const cards = page.locator('#multi-chart-grid .person-chart-card');
+        await expect(cards).toHaveCount(1);
+
+        // 验证卡片名称
+        await expect(cards.first().locator('h4')).toHaveText('测试员');
+
+        // 验证状态提示
+        const status = page.locator('#import-status');
+        await expect(status).toContainText('已导入');
+    });
+
+    test('导入：粘贴无效 JSON 显示错误提示', async ({ page }) => {
+        await page.locator('#btn-import-paste').click();
+        await page.locator('#paste-area').fill('{ invalid json }');
+
+        // 监听 alert 对话框
+        page.on('dialog', async dialog => {
+            expect(dialog.message()).toContain('JSON');
+            await dialog.accept();
+        });
+
+        await page.locator('#btn-paste-confirm').click();
+
+        // 模态框应保持打开（因为导入失败）
+        await expect(page.locator('#paste-modal')).toBeVisible();
+    });
+
+    test('导入：重置按钮恢复默认数据', async ({ page }) => {
+        // 先导入自定义数据
+        const importData = JSON.stringify({
+            people: [{ id: 'test1', name: '测试员', color: '#ff0000' }],
+            tasks: [{ id: 't1', name: '测试任务', person_id: 'test1', start: '2026-08-01', end: '2026-08-10' }]
+        });
+        await page.locator('#btn-import-paste').click();
+        await page.locator('#paste-area').fill(importData);
+        await page.locator('#btn-paste-confirm').click();
+        await page.waitForTimeout(300);
+
+        // 验证是自定义数据（1 行）
+        let rows = page.locator('#task-table-body-a tr');
+        await expect(rows).toHaveCount(1);
+
+        // 点击重置
+        await page.locator('#btn-reset-data').click();
+        await page.waitForLoadState('networkidle');
+
+        // 验证恢复为默认数据（30 行）
+        rows = page.locator('#task-table-body-a tr');
+        await expect(rows).toHaveCount(30);
+    });
+
+    // ============================================================
+    // 新功能测试：Diff 可视化
+    // ============================================================
+
+    test('Diff：初始状态下表格单元格不含 diff 标记', async ({ page }) => {
+        const firstNameCell = page.locator('#task-table-body-a tr').first().locator('.cell-name');
+        const diffOld = firstNameCell.locator('.diff-old');
+        const diffNew = firstNameCell.locator('.diff-new');
+        await expect(diffOld).toHaveCount(0);
+        await expect(diffNew).toHaveCount(0);
+    });
+
+    test('Diff：编辑任务名后显示红删除线原值和新值', async ({ page }) => {
+        const cell = page.locator('#task-table-body-a tr').first().locator('.cell-name');
+        const originalText = await cell.textContent();
+
+        // 编辑任务名
+        await cell.click();
+        await cell.fill('修改后的任务名');
+        await cell.press('Enter');
+        await page.waitForTimeout(200);
+
+        // 验证出现 diff-old（原值，红色删除线）
+        const diffOld = cell.locator('.diff-old');
+        await expect(diffOld).toBeVisible();
+        await expect(diffOld).toHaveText(originalText);
+
+        // 验证出现 diff-new（新值）
+        const diffNew = cell.locator('.diff-new');
+        await expect(diffNew).toBeVisible();
+        await expect(diffNew).toHaveText('修改后的任务名');
+    });
+
+    test('Diff：编辑开始日期后显示日期 diff', async ({ page }) => {
+        const firstRow = page.locator('#task-table-body-a tr').first();
+        const startCell = firstRow.locator('.cell-start');
+        const originalDate = await startCell.textContent();
+
+        // 编辑日期
+        await startCell.click();
+        await startCell.fill('2026-10-01');
+        await startCell.press('Enter');
+        await page.waitForTimeout(200);
+
+        // 验证 diff
+        const diffOld = startCell.locator('.diff-old');
+        const diffNew = startCell.locator('.diff-new');
+        await expect(diffOld).toBeVisible();
+        await expect(diffOld).toHaveText(originalDate);
+        await expect(diffNew).toBeVisible();
+        await expect(diffNew).toHaveText('2026-10-01');
+    });
+
+    test('Diff：Gantt 拖拽后表格显示日期 diff', async ({ page }) => {
+        const firstRow = page.locator('#task-table-body-a tr').first();
+        const startCell = firstRow.locator('.cell-start');
+        const originalDate = await startCell.textContent();
+
+        // 通过 JS 模拟 Gantt 拖拽触发 syncTaskUpdate
+        await page.evaluate(() => {
+            const task = ganttA.tasks[0];
+            if (task) {
+                syncTaskUpdate(task.id, {
+                    start: new Date(task._start.getTime() + 86400000),
+                    end: new Date(task._end.getTime() + 86400000)
+                });
+            }
+        });
+        await page.waitForTimeout(200);
+
+        // 验证 diff
+        const diffOld = startCell.locator('.diff-old');
+        await expect(diffOld).toBeVisible();
+        await expect(diffOld).toHaveText(originalDate);
+    });
+
+    test('Diff：改回原值后 diff 标记消失', async ({ page }) => {
+        const cell = page.locator('#task-table-body-a tr').first().locator('.cell-name');
+        const originalText = await cell.textContent();
+
+        // 修改
+        await cell.click();
+        await cell.fill('临时名称');
+        await cell.press('Enter');
+        await page.waitForTimeout(200);
+        await expect(cell.locator('.diff-old')).toBeVisible();
+
+        // 改回原值
+        await cell.click();
+        await cell.fill(originalText);
+        await cell.press('Enter');
+        await page.waitForTimeout(200);
+
+        // diff 标记应消失
+        await expect(cell.locator('.diff-old')).toHaveCount(0);
+        await expect(cell.locator('.diff-new')).toHaveCount(0);
+    });
+
+    test('Diff：样式正确 - diff-old 有 line-through', async ({ page }) => {
+        const cell = page.locator('#task-table-body-a tr').first().locator('.cell-name');
+        await cell.click();
+        await cell.fill('样式测试');
+        await cell.press('Enter');
+        await page.waitForTimeout(200);
+
+        const diffOld = cell.locator('.diff-old');
+        await expect(diffOld).toHaveCSS('text-decoration-line', 'line-through');
+    });
 });
