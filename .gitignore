@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Playwright
+test-results/
+playwright-report/
+
+# IDE / Agent
+.qoder/
+
+# Screenshots (generated during testing)
+screenshot-*.png
+hr-demo-*.png
+
+# Lock files managed by submodule
+pnpm-lock.yaml
+package-lock.json

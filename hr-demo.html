@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>人力资源 Gantt 图 Demo</title>
+
+    <!-- Frappe Gantt 样式 -->
+    <link rel="stylesheet" href="gantt/dist/frappe-gantt.css" />
+    <!-- HR Demo 样式 -->
+    <link rel="stylesheet" href="hr-demo.css" />
+</head>
+<body>
+
+    <!-- ========== 页面头部 ========== -->
+    <header class="page-header">
+        <h1>人力资源 Gantt 图 Demo</h1>
+        <p>5 位成员 · 每人 6 项任务 · 两种可视化展示方案</p>
+    </header>
+
+    <div class="demo-container">
+
+        <!-- ============================================================
+             单图模式
+             所有 30 个任务在一个 Gantt 图中展示
+             ============================================================ -->
+        <div class="section">
+            <div class="section-title">
+                单图模式
+                <span class="badge">推荐</span>
+            </div>
+            <p class="section-desc">
+                所有成员的任务在同一个图表中展示，通过颜色区分不同人员。适合团队协作和时间冲突可视化。
+            </p>
+
+            <!-- 图例 -->
+            <div class="legend" id="legend-a"></div>
+
+            <!-- 控制工具栏 -->
+            <div class="toolbar">
+                <div class="toolbar-group toolbar-zoom-group">
+                    <span class="toolbar-label">时间粒度：</span>
+                    <div class="zoom-control">
+                        <div class="zoom-slider-row">
+                            <input type="range" class="zoom-slider" id="zoom-slider-a" min="0" max="100" value="70" />
+                            <span class="zoom-value" id="zoom-value-a">67px</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="toolbar-group">
+                    <span class="toolbar-label">周末高亮：</span>
+                    <label class="switch-label">
+                        <input type="checkbox" id="toggle-weekends-a" checked />
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+                <div class="toolbar-group">
+                    <button class="toolbar-btn toolbar-btn-today" id="scroll-today-a">滚动到今天</button>
+                </div>
+            </div>
+
+            <!-- 单图容器 -->
+            <div class="chart-wrapper">
+                <div class="gantt-chart" id="hr-single"></div>
+            </div>
+
+            <!-- 任务表格：与 Gantt 图双向同步 -->
+            <div class="task-table-wrapper">
+                <table class="task-table" id="task-table-a">
+                    <thead>
+                        <tr>
+                            <th>任务名</th>
+                            <th>经办人</th>
+                            <th>开始时间</th>
+                            <th>结束时间</th>
+                        </tr>
+                    </thead>
+                    <tbody id="task-table-body-a">
+                        <!-- 由 JS 动态生成 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <hr class="divider" />
+
+        <!-- ============================================================
+             多图模式
+             每个成员一个独立的 Gantt 图
+             ============================================================ -->
+        <div class="section">
+            <div class="section-title">
+                多图模式
+            </div>
+            <p class="section-desc">
+                每位成员拥有独立的甘特图，清晰展示个人任务安排。适合个人任务管理和详细查看。
+            </p>
+
+            <!-- 控制工具栏 -->
+            <div class="toolbar">
+                <div class="toolbar-group toolbar-zoom-group">
+                    <span class="toolbar-label">时间粒度：</span>
+                    <div class="zoom-control">
+                        <div class="zoom-slider-row">
+                            <input type="range" class="zoom-slider" id="zoom-slider-b" min="0" max="100" value="70" />
+                            <span class="zoom-value" id="zoom-value-b">67px</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="toolbar-group">
+                    <span class="toolbar-label">周末高亮：</span>
+                    <label class="switch-label">
+                        <input type="checkbox" id="toggle-weekends-b" checked />
+                        <span class="switch-slider"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 多图网格容器（由 JS 动态填充） -->
+            <div class="multi-chart-grid" id="multi-chart-grid"></div>
+        </div>
+
+        <div style="height: 60px;"></div>
+    </div>
+
+    <!-- Frappe Gantt 库 -->
+    <script src="gantt/dist/frappe-gantt.umd.js"></script>
+    <!-- HR 数据生成模块 -->
+    <script src="hr-data.js"></script>
+
+    <script>
+        // ============================================================
+        // 初始化数据
+        // ============================================================
+        const people = getPeople();
+        const allTasks = getAllTasks();
+
+        // 存储所有 Gantt 实例
+        let ganttA = null;       // 单图模式实例
+        let ganttBList = [];     // 多图模式实例列表
+
+        // 周末高亮颜色配置
+        const WEEKEND_HOLIDAY = { '#e8f0fe': 'weekend' };
+
+        // 中文星期名称
+        const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+        // 跟踪当前 column_width，供 lower_text 动态决定显示格式
+        var currentColumnWidth = sliderToWidth(INITIAL_SLIDER);
+
+        /**
+         * 根据当前 column_width 返回 lower_text 格式
+         * >= 45px：显示 "日期\n周几"（双行）
+         * < 45px：只显示 "日期"（单行，防止窄列文字溢出侵占图表）
+         */
+        function getLowerText(d) {
+            if (currentColumnWidth < 45) {
+                return d.getDate() + '';
+            }
+            return d.getDate() + '\n' + WEEKDAY_NAMES[d.getDay()];
+        }
+
+        /**
+         * 根据当前 column_width 返回合适的 lower_header_height
+         */
+        function getLowerHeaderHeight() {
+            return currentColumnWidth < 45 ? 30 : 45;
+        }
+
+        // ============================================================
+        // 自定义视图模式：Day 视图每天显示日期 + 周几
+        // ============================================================
+        const CUSTOM_VIEW_MODES = [
+            {
+                name: 'Day',
+                padding: '7d',
+                date_format: 'YYYY-MM-DD',
+                step: '1d',
+                // 下行：根据列宽动态显示 "日期\n周几" 或仅 "日期"
+                lower_text: function (d) {
+                    return getLowerText(d);
+                },
+                // 上行：月份名称（每月显示一次）
+                upper_text: function (d, ld, lang) {
+                    if (!ld || d.getMonth() !== ld.getMonth()) {
+                        return d.toLocaleDateString('zh-CN', { month: 'long', year: 'numeric' });
+                    }
+                    return '';
+                },
+                // 周一画粗线分隔
+                thick_line: function (d) { return d.getDay() === 1; },
+            },
+            // 其他视图使用默认（传字符串由库自动解析）
+            'Week',
+            'Month',
+            'Year',
+        ];
+
+        // ============================================================
+        // 线性粒度控制：滑块值 (0-100) ↔ column_width (px) 映射
+        // 使用指数映射，让低值区变化慢，高值区变化快
+        // ============================================================
+        var MIN_WIDTH = 20;   // 最小列宽
+        var MAX_WIDTH = 100;  // 最大列宽
+        var INITIAL_SLIDER = 70; // 滑块初始位置
+
+        /**
+         * 滑块位置 → column_width（指数映射）
+         */
+        function sliderToWidth(val) {
+            var t = val / 100;
+            // 指数曲线：让中间段更平滑
+            return Math.round(MIN_WIDTH + (MAX_WIDTH - MIN_WIDTH) * Math.pow(t, 1.5));
+        }
+
+        /**
+         * column_width → 滑块位置（反向映射）
+         */
+        function widthToSlider(w) {
+            var t = (w - MIN_WIDTH) / (MAX_WIDTH - MIN_WIDTH);
+            return Math.round(Math.pow(t, 1 / 1.5) * 100);
+        }
+
+        /**
+         * 设置所有图表的 column_width（线性粒度），同时根据列宽调整 header 高度
+         */
+        function setColumnWidth(charts, width) {
+            currentColumnWidth = width;
+            var lowerHeaderHeight = getLowerHeaderHeight();
+            charts.forEach(function (chart) {
+                var scrollLeft = chart.$container.scrollLeft;
+                chart.update_options({
+                    column_width: width,
+                    scroll_to: null,
+                    lower_header_height: lowerHeaderHeight,
+                });
+                chart.$container.scrollLeft = scrollLeft;
+            });
+        }
+
+        // ============================================================
+        // 工具栏控制函数
+        // ============================================================
+
+        /**
+         * 切换周末高亮（保持当前 header 高度）
+         */
+        function toggleWeekends(charts, enabled) {
+            var lowerHeaderHeight = getLowerHeaderHeight();
+            charts.forEach(function (chart) {
+                var scrollLeft = chart.$container.scrollLeft;
+                chart.update_options({
+                    holidays: enabled ? WEEKEND_HOLIDAY : null,
+                    scroll_to: null,
+                    lower_header_height: lowerHeaderHeight,
+                });
+                chart.$container.scrollLeft = scrollLeft;
+            });
+        }
+
+        /**
+         * 绑定工具栏事件（滑块 + 值显示 + 周末开关）
+         */
+        function bindToolbar(sliderId, valueId, toggleId, getCharts, scrollTodayId) {
+            var slider = document.getElementById(sliderId);
+            var valueEl = document.getElementById(valueId);
+            var toggle = document.getElementById(toggleId);
+
+            // 更新显示值
+            function updateValueDisplay() {
+                var width = sliderToWidth(parseInt(slider.value));
+                valueEl.textContent = width + 'px';
+            }
+
+            // 滑块拖动：实时调整 column_width
+            slider.addEventListener('input', function () {
+                var width = sliderToWidth(parseInt(slider.value));
+                setColumnWidth(getCharts(), width);
+                updateValueDisplay();
+            });
+
+            // 周末高亮开关
+            toggle.addEventListener('change', function () {
+                toggleWeekends(getCharts(), toggle.checked);
+            });
+
+            // "滚动到今天" 按钮（仅单图模式）
+            if (scrollTodayId) {
+                document.getElementById(scrollTodayId).addEventListener('click', function () {
+                    getCharts().forEach(function (chart) {
+                        chart.scroll_current();
+                    });
+                });
+            }
+
+            // 初始化时同步显示当前值
+            updateValueDisplay();
+        }
+
+        // 格式化日期为 YYYY-MM-DD
+        function formatDate(date) {
+            const d = new Date(date);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        // 统一同步函数：将任务更新同步到表格、单图 Gantt、多图 Gantt
+        function syncTaskUpdate(taskId, changes) {
+            // 1. 更新表格
+            const row = document.querySelector(`#task-table-body-a tr[data-task-id="${taskId}"]`);
+            if (row) {
+                if (changes.name !== undefined) {
+                    row.querySelector('.cell-name').textContent = changes.name;
+                }
+                if (changes.start !== undefined) {
+                    row.querySelector('.cell-start').textContent = formatDate(changes.start);
+                }
+                if (changes.end !== undefined) {
+                    row.querySelector('.cell-end').textContent = formatDate(changes.end);
+                }
+            }
+
+            // 辅助：同步任务对象的内部 _start/_end（与 setup_tasks 一致的午夜调整）
+            function syncInternalDates(task, newChanges) {
+                if (newChanges.start) {
+                    task._start = new Date(newChanges.start);
+                }
+                if (newChanges.end) {
+                    task._end = new Date(newChanges.end);
+                    // 若结束时间为午夜，加 24 小时以覆盖整天（与 setup_tasks 一致）
+                    if (task._end.getHours() === 0 && task._end.getMinutes() === 0 &&
+                        task._end.getSeconds() === 0 && task._end.getMilliseconds() === 0) {
+                        task._end = new Date(task._end.getTime() + 24 * 60 * 60 * 1000);
+                    }
+                }
+            }
+
+            // 2. 更新单图模式 Gantt
+            const taskA = ganttA.tasks.find(function (t) { return t.id === taskId; });
+            if (taskA) {
+                syncInternalDates(taskA, changes);
+                ganttA.update_task(taskId, changes);
+            }
+
+            // 3. 更新多图模式 Gantt（找到包含该任务的图表并更新）
+            ganttBList.forEach(function (chart) {
+                const taskB = chart.tasks.find(function (t) { return t.id === taskId; });
+                if (taskB) {
+                    syncInternalDates(taskB, changes);
+                    // 多图模式需要保留 [人名] 前缀
+                    var chartChanges = Object.assign({}, changes);
+                    if (chartChanges.name !== undefined) {
+                        var person = people.find(function (p) { return p.id === taskB.person_id; });
+                        if (person) {
+                            chartChanges.name = '[' + person.name + '] ' + chartChanges.name;
+                        }
+                    }
+                    chart.update_task(taskId, chartChanges);
+                }
+            });
+        }
+
+        // ============================================================
+        // 单图模式
+        // ============================================================
+        (function initPlanA() {
+            // 生成图例
+            const legendEl = document.getElementById('legend-a');
+            people.forEach(function (person) {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML =
+                    '<span class="legend-color" style="background:' + person.color + '"></span>' +
+                    '<span>' + person.name + '</span>';
+                legendEl.appendChild(item);
+            });
+
+            // 单图模式使用简化任务名（去掉 [人名] 前缀，避免标签溢出与相邻 bar 重叠）
+            const planATasks = allTasks.map(function (t) {
+                return Object.assign({}, t, {
+                    name: t.name.replace(/^\[[^\]]+\]\s*/, ''),
+                });
+            });
+
+            // 初始化 Gantt（启用周末高亮 + 自定义视图模式）
+            ganttA = new Gantt('#hr-single', planATasks, {
+                view_modes: CUSTOM_VIEW_MODES,
+                scroll_to: 'today',
+                infinite_padding: false,
+                holidays: WEEKEND_HOLIDAY,
+                today_button: false,
+                column_width: sliderToWidth(INITIAL_SLIDER),
+                padding: 24,
+                lower_header_height: 45,
+                upper_header_height: 45,
+                // Gantt → Table/多图模式 同步
+                on_date_change: function (task, start, end) {
+                    syncTaskUpdate(task.id, { start: start, end: end });
+                },
+            });
+
+            // 生成表格数据
+            const tableBody = document.getElementById('task-table-body-a');
+            planATasks.forEach(function (task) {
+                const person = people.find(function (p) { return p.id === task.person_id; });
+                const personColor = person ? person.color : '#999';
+                const personName = person ? person.name : '未知';
+
+                const row = document.createElement('tr');
+                row.setAttribute('data-task-id', task.id);
+                row.innerHTML = `
+                    <td class="cell-name" contenteditable="true">${task.name}</td>
+                    <td class="cell-person">
+                        <div class="person-cell">
+                            <span class="person-dot" style="background:${personColor}"></span>
+                            <span>${personName}</span>
+                        </div>
+                    </td>
+                    <td class="cell-start" contenteditable="true">${formatDate(task.start)}</td>
+                    <td class="cell-end" contenteditable="true">${formatDate(task._end)}</td>
+                `;
+                tableBody.appendChild(row);
+            });
+
+            // Table → Gantt 同步：表格编辑时更新所有 Gantt 实例
+            tableBody.addEventListener('blur', function (e) {
+                if (e.target.getAttribute('contenteditable') !== 'true') return;
+
+                const row = e.target.closest('tr');
+                const taskId = row.getAttribute('data-task-id');
+                const cell = e.target;
+                const newValue = cell.textContent.trim();
+
+                // 更新任务名
+                if (cell.classList.contains('cell-name')) {
+                    syncTaskUpdate(taskId, { name: newValue });
+                }
+                // 更新开始时间
+                else if (cell.classList.contains('cell-start')) {
+                    const newDate = new Date(newValue);
+                    if (!isNaN(newDate.getTime())) {
+                        syncTaskUpdate(taskId, { start: newDate });
+                    } else {
+                        const task = ganttA.tasks.find(function (t) { return t.id === taskId; });
+                        cell.textContent = formatDate(task ? task.start : newValue);
+                    }
+                }
+                // 更新结束时间
+                else if (cell.classList.contains('cell-end')) {
+                    const newDate = new Date(newValue);
+                    if (!isNaN(newDate.getTime())) {
+                        syncTaskUpdate(taskId, { end: newDate });
+                    } else {
+                        const task = ganttA.tasks.find(function (t) { return t.id === taskId; });
+                        cell.textContent = formatDate(task ? task._end : newValue);
+                    }
+                }
+            }, true);
+
+            // 按 Enter 键时退出编辑
+            tableBody.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && e.target.getAttribute('contenteditable') === 'true') {
+                    e.preventDefault();
+                    e.target.blur();
+                }
+            });
+
+            // 绑定工具栏
+            bindToolbar('zoom-slider-a', 'zoom-value-a', 'toggle-weekends-a', function () {
+                return [ganttA];
+            }, 'scroll-today-a');
+        })();
+
+        // ============================================================
+        // 多图模式
+        // ============================================================
+        (function initPlanB() {
+            var grid = document.getElementById('multi-chart-grid');
+
+            people.forEach(function (person) {
+                var personTasks = getPersonTasks(person.id);
+
+                // 创建卡片
+                var card = document.createElement('div');
+                card.className = 'person-chart-card';
+
+                // 头部：头像 + 名称 + 任务数
+                var header = document.createElement('div');
+                header.className = 'person-header';
+
+                var avatar = document.createElement('div');
+                avatar.className = 'person-avatar';
+                avatar.style.background = person.color;
+                avatar.textContent = person.name.charAt(0);
+
+                var titleWrap = document.createElement('div');
+
+                var h4 = document.createElement('h4');
+                h4.textContent = person.name;
+
+                var countSpan = document.createElement('span');
+                countSpan.className = 'task-count';
+                countSpan.textContent = personTasks.length + ' 项任务';
+
+                titleWrap.appendChild(h4);
+                titleWrap.appendChild(countSpan);
+
+                header.appendChild(avatar);
+                header.appendChild(titleWrap);
+
+                // Gantt 容器
+                var chartDiv = document.createElement('div');
+                chartDiv.className = 'gantt-chart';
+                chartDiv.id = 'hr-' + person.id;
+
+                card.appendChild(header);
+                card.appendChild(chartDiv);
+                grid.appendChild(card);
+
+                // 初始化 Gantt 实例（启用周末高亮 + 自定义视图模式）
+                var ganttInstance = new Gantt('#hr-' + person.id, personTasks, {
+                    view_modes: CUSTOM_VIEW_MODES,
+                    scroll_to: 'today',
+                    infinite_padding: false,
+                    holidays: WEEKEND_HOLIDAY,
+                    today_button: false,
+                    column_width: sliderToWidth(INITIAL_SLIDER),
+                    lower_header_height: 45,
+                    upper_header_height: 45,
+                    // 多图模式拖动时同步回表格和单图模式
+                    on_date_change: function (task, start, end) {
+                        syncTaskUpdate(task.id, { start: start, end: end });
+                    },
+                });
+
+                ganttBList.push(ganttInstance);
+            });
+
+            // 绑定工具栏
+            bindToolbar('zoom-slider-b', 'zoom-value-b', 'toggle-weekends-b', function () {
+                return ganttBList;
+            });
+        })();
+    </script>
+</body>
+</html>
