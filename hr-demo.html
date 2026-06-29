@@ -148,6 +148,10 @@
     <script src="gantt/dist/frappe-gantt.umd.js"></script>
     <!-- HR 数据生成模块 -->
     <script src="hr-data.js"></script>
+    <!-- 数据输入适配器模块 -->
+    <script src="hr-data-input.js"></script>
+    <!-- 变更数据输出模块 -->
+    <script src="hr-data-output.js"></script>
 
     <script>
         // ============================================================
@@ -159,6 +163,22 @@
         // 存储所有 Gantt 实例
         let ganttA = null;       // 单图模式实例
         let ganttBList = [];     // 多图模式实例列表
+
+        // ============================================================
+        // 初始化数据输入/输出接口模块
+        // ============================================================
+        const inputManager = new DataInputManager();
+        const changeStream = new ChangeStream();
+
+        // 变更类型常量（便于外部应用识别）
+        const CHANGE_TYPE = {
+            TASK_NAME: 'task-name',
+            TASK_START: 'task-start',
+            TASK_END: 'task-end',
+            TASK_PROGRESS: 'task-progress',
+            BATCH_IMPORT: 'batch-import',
+            DATA_RESET: 'data-reset',
+        };
 
         // 周末高亮颜色配置
         const WEEKEND_HOLIDAY = { '#e8f0fe': 'weekend' };
@@ -373,18 +393,33 @@
         }
 
         // 统一同步函数：将任务更新同步到表格、单图 Gantt、多图 Gantt
-        function syncTaskUpdate(taskId, changes) {
+        function syncTaskUpdate(taskId, changes, source) {
+            source = source || 'table-edit';
+            var orig = originalTaskMap.get(taskId) || {};
+
             // 1. 更新表格（使用 diff 渲染显示原值和新值）
             const row = document.querySelector(`#task-table-body-a tr[data-task-id="${taskId}"]`);
             if (row) {
                 if (changes.name !== undefined) {
                     renderDiffCell(row.querySelector('.cell-name'), taskId, 'name', changes.name);
+                    changeStream.publish(CHANGE_TYPE.TASK_NAME, taskId, {
+                        oldValue: orig.name,
+                        newValue: changes.name,
+                    }, { source: source });
                 }
                 if (changes.start !== undefined) {
                     renderDiffCell(row.querySelector('.cell-start'), taskId, 'start', formatDate(changes.start));
+                    changeStream.publish(CHANGE_TYPE.TASK_START, taskId, {
+                        oldValue: orig.start,
+                        newValue: formatDate(changes.start),
+                    }, { source: source });
                 }
                 if (changes.end !== undefined) {
                     renderDiffCell(row.querySelector('.cell-end'), taskId, 'end', formatDate(changes.end));
+                    changeStream.publish(CHANGE_TYPE.TASK_END, taskId, {
+                        oldValue: orig.end,
+                        newValue: formatDate(changes.end),
+                    }, { source: source });
                 }
             }
 
@@ -463,7 +498,7 @@
                 upper_header_height: 45,
                 // Gantt → Table/多图模式 同步
                 on_date_change: function (task, start, end) {
-                    syncTaskUpdate(task.id, { start: start, end: end });
+                    syncTaskUpdate(task.id, { start: start, end: end }, 'gantt-drag');
                 },
             });
 
@@ -607,7 +642,7 @@
                     upper_header_height: 45,
                     // 多图模式拖动时同步回表格和单图模式
                     on_date_change: function (task, start, end) {
-                        syncTaskUpdate(task.id, { start: start, end: end });
+                        syncTaskUpdate(task.id, { start: start, end: end }, 'gantt-drag');
                     },
                 });
 
@@ -694,25 +729,22 @@
             var file = e.target.files[0];
             if (!file) return;
 
-            var reader = new FileReader();
-            reader.onload = function (evt) {
-                try {
-                    var jsonData = JSON.parse(evt.target.result);
-                    var result = loadExternalData(jsonData);
-                    rebuildAll(result.people, result.tasks);
-                } catch (err) {
-                    var statusEl = document.getElementById('import-status');
-                    if (statusEl) {
-                        statusEl.textContent = '✘ 导入失败：' + err.message;
-                        statusEl.className = 'import-status import-error';
-                    }
-                    alert('导入失败：' + err.message);
+            inputManager.loadFromFile(file).then(function (result) {
+                rebuildAll(result.people, result.tasks);
+                changeStream.publish(CHANGE_TYPE.BATCH_IMPORT, '', {
+                    sourceType: 'json-file',
+                    fileName: file.name,
+                    peopleCount: result.people.length,
+                    taskCount: result.tasks.length,
+                }, { source: 'user-import' });
+            }).catch(function (err) {
+                var statusEl = document.getElementById('import-status');
+                if (statusEl) {
+                    statusEl.textContent = '✘ 导入失败：' + err.message;
+                    statusEl.className = 'import-status import-error';
                 }
-            };
-            reader.onerror = function () {
-                alert('文件读取失败');
-            };
-            reader.readAsText(file);
+                alert('导入失败：' + err.message);
+            });
             e.target.value = ''; // 允许重复导入同一文件
         });
 
@@ -729,14 +761,17 @@
                 alert('请粘贴 JSON 数据');
                 return;
             }
-            try {
-                var jsonData = JSON.parse(jsonText);
-                var result = loadExternalData(jsonData);
+            inputManager.loadFromPaste(jsonText).then(function (result) {
                 rebuildAll(result.people, result.tasks);
+                changeStream.publish(CHANGE_TYPE.BATCH_IMPORT, '', {
+                    sourceType: 'paste-json',
+                    peopleCount: result.people.length,
+                    taskCount: result.tasks.length,
+                }, { source: 'user-import' });
                 document.getElementById('paste-modal').hidden = true;
-            } catch (err) {
-                alert('JSON 格式错误：' + err.message);
-            }
+            }).catch(function (err) {
+                alert('导入失败：' + err.message);
+            });
         });
 
         document.getElementById('btn-paste-cancel').addEventListener('click', function () {
@@ -745,8 +780,98 @@
 
         // 重置默认数据
         document.getElementById('btn-reset-data').addEventListener('click', function () {
+            changeStream.publish(CHANGE_TYPE.DATA_RESET, '', {
+                peopleCount: people.length,
+                taskCount: allTasks.length,
+            }, { source: 'user-reset' });
             location.reload();
         });
+
+        // ============================================================
+        // 外部应用接入接口（暴露到 window）
+        // ============================================================
+
+        /**
+         * HR Gantt 应用上下文
+         * 供外部应用（如 iframe 父页面、Chrome 扩展、其他 JS 模块）接入使用
+         */
+        window.HRGanttApp = {
+            // 数据输入接口
+            input: inputManager,
+
+            // 变更数据输出接口
+            changeStream: changeStream,
+
+            // 变更类型常量
+            CHANGE_TYPE: CHANGE_TYPE,
+
+            // 获取当前数据快照
+            getData: function () {
+                return { people: people, tasks: allTasks };
+            },
+
+            // 程序化注入数据（外部应用直接调用）
+            loadData: function (data) {
+                return inputManager.loadFromObject(data).then(function (result) {
+                    rebuildAll(result.people, result.tasks);
+                    changeStream.publish(CHANGE_TYPE.BATCH_IMPORT, '', {
+                        sourceType: 'programmatic',
+                        peopleCount: result.people.length,
+                        taskCount: result.tasks.length,
+                    }, { source: 'external-api' });
+                    return result;
+                });
+            },
+
+            // 从远程 API 加载数据
+            loadFromApi: function (url, options) {
+                return inputManager.loadFromApi(url, options).then(function (result) {
+                    rebuildAll(result.people, result.tasks);
+                    return result;
+                });
+            },
+
+            // 订阅变更事件（回调方式，最简单的外部集成）
+            onChange: function (callback) {
+                return changeStream.onChange(callback);
+            },
+
+            // 按类型订阅变更事件
+            on: function (type, callback) {
+                return changeStream.on(type, callback);
+            },
+
+            // 获取当前已注册的输入/输出适配器列表
+            listAdapters: function () {
+                return {
+                    inputs: inputManager.list(),
+                    outputs: changeStream.list(),
+                };
+            },
+
+            // 注册自定义输入适配器
+            registerInput: function (adapter) {
+                inputManager.register(adapter);
+                return this;
+            },
+
+            // 注册自定义输出适配器
+            subscribeOutput: function (adapter) {
+                changeStream.subscribe(adapter);
+                return this;
+            },
+
+            // 获取原始值快照（用于 diff 对比）
+            getOriginalSnapshot: function () {
+                return Object.fromEntries(originalTaskMap);
+            },
+        };
+
+        // 兼容性别名（旧代码可直接调用）
+        window.hrGanttLoadData = window.HRGanttApp.loadData;
+        window.hrGanttOnChange = window.HRGanttApp.onChange;
+
+        console.log('[HR Gantt] 外部应用接口已就绪。调用 window.HRGanttApp 查看可用 API。');
     </script>
 </body>
 </html>
