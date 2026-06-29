@@ -438,11 +438,58 @@
                 }
             }
 
-            // 2. 更新单图模式 Gantt
+            // 辅助：直接更新 bar 的 DOM 属性（不调用 bar.refresh()，避免重建 DOM 导致拖动失效）
+            function updateBarDOM(ganttInstance, taskId, changes) {
+                var task = ganttInstance.tasks.find(function (t) { return t.id === taskId; });
+                if (!task) return;
+                var bar = ganttInstance.get_bar(taskId);
+                if (!bar || !bar.$bar) return;
+
+                // 更新任务名（如果改变）
+                if (changes.name !== undefined) {
+                    task.name = changes.name;
+                    // 更新标签文本
+                    var label = bar.group.querySelector('.bar-label');
+                    if (label) {
+                        label.innerHTML = changes.name;
+                    }
+                }
+
+                // 更新 start/end 属性（用于外部访问）
+                if (changes.start !== undefined) {
+                    task.start = changes.start;
+                }
+                if (changes.end !== undefined) {
+                    task.end = changes.end;
+                }
+
+                // 重新计算 x 和 duration
+                bar.compute_x();
+                bar.compute_duration();
+
+                // 更新 bar 的 x 和 width 属性
+                var newWidth = ganttInstance.config.column_width * bar.duration;
+                bar.$bar.setAttribute('x', bar.x);
+                bar.$bar.setAttribute('width', newWidth);
+
+                // 更新日期高亮
+                if (bar.$date_highlight) {
+                    bar.$date_highlight.style.left = bar.x + 'px';
+                    bar.$date_highlight.style.width = newWidth + 'px';
+                }
+
+                // 更新进度条、标签位置、handle、箭头位置
+                bar.update_progressbar_position();
+                bar.update_label_position();
+                bar.update_handle_position();
+                bar.update_arrow_position();
+            }
+
+            // 2. 更新单图模式 Gantt（直接更新 DOM，不调用 update_task）
             const taskA = ganttA.tasks.find(function (t) { return t.id === taskId; });
             if (taskA) {
                 syncInternalDates(taskA, changes);
-                ganttA.update_task(taskId, changes);
+                updateBarDOM(ganttA, taskId, changes);
             }
 
             // 3. 更新多图模式 Gantt（找到包含该任务的图表并更新）
@@ -458,7 +505,7 @@
                             chartChanges.name = '[' + person.name + '] ' + chartChanges.name;
                         }
                     }
-                    chart.update_task(taskId, chartChanges);
+                    updateBarDOM(chart, taskId, chartChanges);
                 }
             });
         }
