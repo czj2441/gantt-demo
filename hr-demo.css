@@ -278,6 +278,12 @@ body {
     height: fit-content;
 }
 
+/* 禁用 Gantt 容器垂直滚动，避免水平滚动条挤占空间 */
+.gantt-container {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+}
+
 /* ========== 图例 ========== */
 .legend {
     display: flex;
